@@ -1,3 +1,5 @@
+# Developed by Denis Chaimow
+
 from nipype.interfaces import spm
 from nipype.interfaces import matlab
 from nipype.interfaces import cat12
@@ -148,104 +150,78 @@ def cat12_seg(in_file,cat12_output_dir):
 
         return gm_file, wm_file
 
-def mp2rage_recon_all(inv2_file,uni_file,output_fs_dir=None, gdc_coeff_file=None):
-    
-    #get codedir
-    codeDir=os.getcwd()
+def mp2rage_recon_all_updated(inv2_file, uni_file, subject_name, output_fs_dir=None, gdc_coeff_file=None):
+    # Get code directory
+    codeDir = os.getcwd()
 
-    # Get current working directory and filename of the loaded MPRAGE file
+    # Get base names
     cwd = os.path.dirname(os.path.abspath(inv2_file))
-    inv2_basename = str(os.path.basename(os.path.abspath(inv2_file)))
-    uni_basename=str(os.path.basename(os.path.abspath(uni_file)))
+    inv2_basename = os.path.basename(inv2_file)
+    uni_basename = os.path.basename(uni_file)
 
-    # Navigation through folders to get the path of derivatives folder where output is saved
-    subject_path = os.path.dirname(os.path.dirname(cwd))
-    subject_foldername = os.path.basename(subject_path)
-    orient_dep_path = os.path.dirname(os.path.dirname(os.path.dirname(cwd)))
-    if gdc_coeff_file is not None:
-        derivatives_path = os.path.join(orient_dep_path, 'derivatives/mprage_gdc_recon-all', subject_foldername)
+    # Set output directory
+    if output_fs_dir is not None:
+        derivatives_path = os.path.join(output_fs_dir, subject_name)
     else:
-        derivatives_path = os.path.join(orient_dep_path, 'derivatives/mprage_recon-all', subject_foldername)
+        orient_dep_path = os.path.dirname(os.path.dirname(os.path.dirname(cwd)))
+        if gdc_coeff_file is not None:
+            derivatives_path = os.path.join(orient_dep_path, 'derivatives/mprage_gdc_recon-all', subject_name)
+        else:
+            derivatives_path = os.path.join(orient_dep_path, 'derivatives/mprage_recon-all', subject_name)
 
-    # Check if the output directory exists - if not create it
-    if not os.path.exists(derivatives_path):
-        os.makedirs(derivatives_path)
-        print(f"****** created directory: {derivatives_path}")
-    else:
-        print(f"****** directory already exists: {derivatives_path}")
-    
-    # Create filename and path for output
+    # Create output directory if it doesn't exist
+    os.makedirs(derivatives_path, exist_ok=True)
+    print(f"****** Using directory: {derivatives_path}")
+
+    # Set filenames for intermediate outputs
     uni_mprageized_file = os.path.join(derivatives_path, 'T1w.nii')
-    uni_mprageized_brain_file =   os.path.join(derivatives_path,'T1w_brain.nii') 
-    brainmask_file =  os.path.join(derivatives_path, 'T1w_brainmask.nii')
+    uni_mprageized_brain_file = os.path.join(derivatives_path, 'T1w_brain.nii')
+    brainmask_file = os.path.join(derivatives_path, 'T1w_brainmask.nii')
 
-    # Perform bias correction by calling the function
-    mprageize(inv2_file,uni_file,uni_mprageized_file)
-    print("****** mprageize  complete")
+    # Perform bias correction
+    mprageize(inv2_file, uni_file, uni_mprageized_file)
+    print("****** mprageize complete")
 
-    #run gdc
+    # Run gradient distortion correction if applicable
     if gdc_coeff_file is not None:
         print("****** running gdc")
-        subprocess.run([os.path.join(codeDir, 'run_gdc.sh'), uni_mprageized_file,  gdc_coeff_file])
-        uni_mprageized_file = uni_mprageized_file.replace('T1w','T1w_gdc')
-        uni_mprageized_brain_file =  uni_mprageized_brain_file.replace('T1w_brain','T1w_brain_gdc')
-        brainmask_file = brainmask_file.replace('brainmask','brainmask_gdc')
+        subprocess.run([os.path.join(codeDir, 'run_gdc.sh'), uni_mprageized_file, gdc_coeff_file])
+        uni_mprageized_file = uni_mprageized_file.replace('T1w', 'T1w_gdc')
+        uni_mprageized_brain_file = uni_mprageized_brain_file.replace('T1w_brain', 'T1w_brain_gdc')
+        brainmask_file = brainmask_file.replace('brainmask', 'brainmask_gdc')
     print("****** gdc complete")
 
-    ## Obtain GM, WM, Brainmask and Brain extraction using cat12 ##    
-    # Call CAT12 function on bias corrected image
-    cat12_output_dir=os.path.join(derivatives_path,'mri')
-    gm_file, wm_file = cat12_seg(uni_mprageized_file,cat12_output_dir)
+    # CAT12 segmentation
+    cat12_output_dir = os.path.join(derivatives_path, 'mri')
+    gm_file, wm_file = cat12_seg(uni_mprageized_file, cat12_output_dir)
     print("****** CAT12 complete")
 
-    # Load the GM and WM files (saved by CAT12) and mprageized file
-    gm_nii = nib.load(gm_file)
-    wm_nii = nib.load(wm_file)
-    uni_mprageized_nii = nib.load(uni_mprageized_file)
-    print("****** segmentations and uni_mprageized_loaded")
+    # Load data for brain mask
+    gm_data = nib.load(gm_file).get_fdata()
+    wm_data = nib.load(wm_file).get_fdata()
+    uni_data = nib.load(uni_mprageized_file)
+    uni_mprageized_data = uni_data.get_fdata()
+    print("****** Data loaded")
 
-    # Get data from these nifit files
-    gm_data = gm_nii.get_fdata()
-    wm_data = wm_nii.get_fdata()
-    uni_mprageized_data = uni_mprageized_nii.get_fdata()    
-    print("****** data from segmentations and uni_mprageized_data extracted")
+    # Create and save brain mask
+    brainmask_data = np.array(((wm_data > 0) | (gm_data > 0)), dtype=int)
+    nib.save(nib.Nifti1Image(brainmask_data, uni_data.affine, uni_data.header), brainmask_file)
+    print("****** Brain mask saved")
 
-    # Creating and saving brain mask
-    brainmask_data = np.array(((wm_data > 0) | (gm_data > 0)),dtype=int)
-    brainmask_nii = nib.Nifti1Image(brainmask_data,
-                                    uni_mprageized_nii.affine,
-                                    uni_mprageized_nii.header)
-    nib.save(brainmask_nii, brainmask_file)
-    print("****** brain mask saved")
+    # Create and save brain-extracted T1w image
+    brain_data = brainmask_data * uni_mprageized_data
+    nib.save(nib.Nifti1Image(brain_data, uni_data.affine, uni_data.header), uni_mprageized_brain_file)
+    print("****** Brain-extracted T1w saved")
 
-    # Creating and saving brain extraction
-    uni_mprageized_brain_data = brainmask_data * uni_mprageized_data
-    uni_mprageized_brain_nii = nib.Nifti1Image(uni_mprageized_brain_data,
-                                               uni_mprageized_nii.affine,
-                                               uni_mprageized_nii.header)
-    nib.save(uni_mprageized_brain_nii,uni_mprageized_brain_file)
-    print("****** brain extraction saved")
-
-    ##########################################
-    ##### run recon-all from Freesurfer ######
-    #########################################
-
-    # define directory for Freeseurfer
+    # Run recon-all (autorecon1)
     fs_dir = derivatives_path
     sub = 'freesurfer'
-        
-    # autorecon1 without skullstrip removal (~11 mins)
-    os.system("recon-all" + \
-          " -i " + uni_mprageized_file + \
-          " -hires" + \
-          " -autorecon1" + \
-          " -noskullstrip" + \
-          " -sd " + fs_dir + \
-          " -s " + sub + \
-          " -parallel")
-    print("****** auto recon 1 is complete")
+    os.system(
+        f"recon-all -i {uni_mprageized_file} -hires -autorecon1 -noskullstrip -sd {fs_dir} -s {sub} -parallel"
+    )
+    print("****** autorecon1 complete")
 
-    # apply brain mask from CAT12
+    # Apply CAT12 brain mask in FreeSurfer space
     transmask = ApplyVolTransform()
     transmask.inputs.source_file = brainmask_file
     transmask.inputs.target_file = os.path.join(fs_dir, sub, 'mri', 'orig.mgz')
@@ -254,36 +230,37 @@ def mp2rage_recon_all(inv2_file,uni_file,output_fs_dir=None, gdc_coeff_file=None
     transmask.inputs.transformed_file = os.path.join(fs_dir, sub, 'mri', 'brainmask_mask.mgz')
     transmask.inputs.args = "--no-save-reg"
     transmask.run(cwd=derivatives_path)
-    print("****** applying brain mask from CAT12 is complete")
+    print("****** Applied CAT12 brain mask")
 
+    # Apply final brain mask
     applymask = ApplyMask()
-    applymask.inputs.in_file = os.path.join(fs_dir, sub,'mri','T1.mgz')
+    applymask.inputs.in_file = os.path.join(fs_dir, sub, 'mri', 'T1.mgz')
     applymask.inputs.mask_file = os.path.join(fs_dir, sub, 'mri', 'brainmask_mask.mgz')
-    applymask.inputs.out_file =  os.path.join(fs_dir, sub, 'mri', 'brainmask.mgz')
+    applymask.inputs.out_file = os.path.join(fs_dir, sub, 'mri', 'brainmask.mgz')
     applymask.run(cwd=derivatives_path)
-    print("****** apply mask is complete")
+    print("****** Final brain mask applied")
 
-    shutil.copy2(os.path.join(fs_dir, sub, 'mri', 'brainmask.mgz'),
-                 os.path.join(fs_dir, sub, 'mri','brainmask.auto.mgz'))
+    shutil.copy2(
+        os.path.join(fs_dir, sub, 'mri', 'brainmask.mgz'),
+        os.path.join(fs_dir, sub, 'mri', 'brainmask.auto.mgz')
+    )
 
-    # continue recon-all
-    with open(os.path.join(derivatives_path,'expert.opts'), 'w') as text_file:
+    # Expert options
+    with open(os.path.join(derivatives_path, 'expert.opts'), 'w') as text_file:
         text_file.write('mris_inflate -n 100\n')
-        print("****** expert option saved as text file")
-    
-     # autorecon2 and 3
-    autorecon23_call = "recon-all" + \
-                     " -hires" + \
-                     " -autorecon2" + " -autorecon3"\
-                     " -sd " + fs_dir + \
-                     " -s " + sub + \
-                     " -expert " + os.path.join(derivatives_path,'expert.opts') + \
-                     " -xopts-overwrite" + \
-                     " -parallel "
-                    
-    # deal with freesurfer version 7.3.2 bug:
+    print("****** expert.opts written")
+
+    # Recon-all autorecon2 and 3
+    autorecon23_call = (
+        f"recon-all -hires -autorecon2 -autorecon3 "
+        f"-sd {fs_dir} -s {sub} "
+        f"-expert {os.path.join(derivatives_path, 'expert.opts')} "
+        f"-xopts-overwrite -parallel"
+    )
+
     fs_version = subprocess.check_output(['recon-all', '--version']).decode('utf-8').split()[0]
     if '7.3.2' in fs_version:
-        autorecon23_call = autorecon23_call + " -careg"
+        autorecon23_call += " -careg"
 
     os.system(autorecon23_call)
+    print("****** autorecon2 and autorecon3 complete")
